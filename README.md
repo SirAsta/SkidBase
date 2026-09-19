@@ -1,6 +1,6 @@
 # SkidBase
 Updated to version-4310300497aa4917
-loader isnt updated sir make ur own ig
+Genuinely dont know if the loader still works gng 
 
 
 this is the uh 24% sunc base idk ab unc 

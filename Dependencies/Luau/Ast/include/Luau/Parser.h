@@ -122,6 +122,12 @@ private:
     // if exp then block {elseif exp then block} [else block] end
     AstStat* parseIf();
 
+    // (`if' | `elseif') (`local' | `const') binding `=' exp then block ... end -- parses an entire `if local`/`if const`
+    AstStat* parseIfLocalCondition(const Location& start);
+
+    // Parse the trailing `{elseif exp then block} [else block] end` shared by `parseIf` and `parseIfLocalCondition`
+    AstStat* parseElseBody(const Location& start, const Lexeme& matchThen, AstStatBlock* thenbody, Location& end, std::optional<Location>& elseLocation);
+
     // while exp do block end
     AstStat* parseWhile();
 
@@ -191,7 +197,7 @@ private:
     // type Name `=' Type
     AstStat* parseTypeAlias(const Location& start, bool exported, Position typeKeywordPosition);
 
-    AstStat* parseClassStat(const Location& start, bool exported);
+    AstStat* parseClassStat(const Location& start, bool exported, bool open);
 
     // type function Name ... end
     AstStat* parseTypeFunction(const Location& start, bool exported, Position typeKeywordPosition);
@@ -354,6 +360,12 @@ private:
 
     // TODO: Add grammar rules here?
     AstExpr* parseIfElseExpr();
+
+    // (`if' | `elseif') (`local' | `const') binding `=' exp then exp ... else exp -- parses an entire `if local`/`if const` expression
+    AstExpr* parseIfElseExprLocalCondition(const Location& start);
+
+    // Parse the trailing `else exp` / `elseif ...` shared by `parseIfElseExpr` and `parseIfElseExprLocalCondition`
+    AstExpr* parseIfElseExprTail(bool& hasElse, bool& isElseIf);
 
     // stringinterp ::= <INTERP_BEGIN> exp {<INTERP_MID> exp} <INTERP_END>
     AstExpr* parseInterpString();
@@ -545,7 +557,7 @@ private:
 
     DenseHashMap<AstName, AstLocal*> localMap;
     std::vector<AstLocal*> localStack;
-    DenseHashMap<AstName, AstStatClass*> classesWithinModule{{}};
+    DenseHashMap<AstName, AstStatClass*> classesWithinModule;
 
     std::vector<ParseError> parseErrors;
 

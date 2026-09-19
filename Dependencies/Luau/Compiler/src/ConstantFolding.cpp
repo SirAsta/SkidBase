@@ -10,6 +10,8 @@
 #include <math.h>
 
 LUAU_FASTFLAG(LuauIntegerType2)
+LUAU_FASTFLAG(DebugLuauIfLocalSyntax)
+LUAU_FASTFLAGVARIABLE(LuauCompileNoFoldVectorEqW)
 
 namespace Luau
 {
@@ -56,6 +58,20 @@ static bool constantsEqual(const Constant& la, const Constant& ra)
         LUAU_ASSERT(!"Unexpected constant type in comparison");
         return false;
     }
+}
+
+// vector component 'w' is not visible to VM runtime configured with LUA_VECTOR_SIZE == 3, so vectors that only differ in 'w' can't be compared
+static bool vectorsDifferOnlyInW(const Constant& la, const Constant& ra)
+{
+    if (la.type == Constant::Type_Vectorf && ra.type == Constant::Type_Vectorf)
+        return la.valueVectorf[0] == ra.valueVectorf[0] && la.valueVectorf[1] == ra.valueVectorf[1] && la.valueVectorf[2] == ra.valueVectorf[2] &&
+               la.valueVectorf[3] != ra.valueVectorf[3];
+
+    if (la.type == Constant::Type_Vectord && ra.type == Constant::Type_Vectord)
+        return la.valueVectord[0] == ra.valueVectord[0] && la.valueVectord[1] == ra.valueVectord[1] && la.valueVectord[2] == ra.valueVectord[2] &&
+               la.valueVectord[3] != ra.valueVectord[3];
+
+    return false;
 }
 
 static void foldUnary(Constant& result, AstExprUnary::Op op, const Constant& arg)
@@ -473,7 +489,8 @@ static void foldBinary(Constant& result, AstExprBinary::Op op, const Constant& l
         break;
 
     case AstExprBinary::CompareNe:
-        if (la.type != Constant::Type_Unknown && ra.type != Constant::Type_Unknown)
+        if (la.type != Constant::Type_Unknown && ra.type != Constant::Type_Unknown &&
+            !(FFlag::LuauCompileNoFoldVectorEqW && vectorsDifferOnlyInW(la, ra)))
         {
             result.type = Constant::Type_Boolean;
             result.valueBoolean = !constantsEqual(la, ra);
@@ -481,7 +498,8 @@ static void foldBinary(Constant& result, AstExprBinary::Op op, const Constant& l
         break;
 
     case AstExprBinary::CompareEq:
-        if (la.type != Constant::Type_Unknown && ra.type != Constant::Type_Unknown)
+        if (la.type != Constant::Type_Unknown && ra.type != Constant::Type_Unknown &&
+            !(FFlag::LuauCompileNoFoldVectorEqW && vectorsDifferOnlyInW(la, ra)))
         {
             result.type = Constant::Type_Boolean;
             result.valueBoolean = constantsEqual(la, ra);
@@ -590,7 +608,7 @@ struct TableMutationTracker : AstVisitor
 {
     const DenseHashMap<AstLocal*, Variable>& variables;
 
-    DenseHashSet<AstLocal*> escaped{nullptr};
+    DenseHashSet<AstLocal*> escaped;
 
     TableMutationTracker(const DenseHashMap<AstLocal*, Variable>& variables)
         : variables(variables)
@@ -757,7 +775,7 @@ struct ConstantVisitor : AstVisitor
     std::vector<Constant> builtinArgs;
 
     const DenseHashMap<AstLocal*, TableConstantKind>& constantTableLocals;
-    DenseHashMap<AstLocal*, Constant> tableLocals{nullptr};
+    DenseHashMap<AstLocal*, Constant> tableLocals;
 
     ExprConstantChangeLog* exprChangeLog = nullptr;
     LocalConstantChangeLog* localChangeLog = nullptr;
@@ -992,7 +1010,7 @@ struct ConstantVisitor : AstVisitor
         else if (AstExprTable* expr = node->as<AstExprTable>())
         {
             // If expr is a constant table, update result to be a table constant, and insert it into constantTables
-            DenseHashMap<AstName, Constant> props{AstName()};
+            DenseHashMap<AstName, Constant> props;
             for (size_t i = 0; i < expr->items.size; ++i)
             {
                 const AstExprTable::Item& item = expr->items.data[i];
@@ -1147,27 +1165,53 @@ struct ConstantVisitor : AstVisitor
         return false;
     }
 
+    void recordLocal(AstLocal* local, AstExpr* value)
+    {
+        Constant arg = analyze(value);
+
+        if (arg.type == Constant::Type_Table)
+        {
+            // If this table could be mutated later, record Constant_Unknown instead of Constant_Table
+            const TableConstantKind* kind = constantTableLocals.find(local);
+            if (kind && *kind == ConstantTable)
+                recordValue(local, arg);
+            else
+                recordValue(local, {});
+        }
+        else
+        {
+            recordValue(local, arg);
+        }
+    }
+
     bool visit(AstStatLocal* node) override
     {
         // all values that align wrt indexing are simple - we just match them 1-1
         for (size_t i = 0; i < node->vars.size && i < node->values.size; ++i)
         {
-            AstExpr* rhs = node->values.data[i];
-            Constant arg = analyze(rhs);
-
-            if (arg.type == Constant::Type_Table)
+            if (FFlag::DebugLuauIfLocalSyntax)
             {
-                AstLocal* local = node->vars.data[i];
-
-                // If this table could be mutated later, record Constant_Unknown instead of Constant_Table
-                const TableConstantKind* kind = constantTableLocals.find(local);
-                if (kind && *kind == ConstantTable)
-                    recordValue(local, arg);
-                else
-                    recordValue(local, {});
+                recordLocal(node->vars.data[i], node->values.data[i]);
             }
             else
-                recordValue(node->vars.data[i], arg);
+            {
+                AstExpr* rhs = node->values.data[i];
+                Constant arg = analyze(rhs);
+
+                if (arg.type == Constant::Type_Table)
+                {
+                    AstLocal* local = node->vars.data[i];
+
+                    // If this table could be mutated later, record Constant_Unknown instead of Constant_Table
+                    const TableConstantKind* kind = constantTableLocals.find(local);
+                    if (kind && *kind == ConstantTable)
+                        recordValue(local, arg);
+                    else
+                        recordValue(local, {});
+                }
+                else
+                    recordValue(node->vars.data[i], arg);
+            }
         }
 
         if (node->vars.size > node->values.size)
@@ -1194,6 +1238,32 @@ struct ConstantVisitor : AstVisitor
                 analyze(node->values.data[i]);
         }
 
+        return false;
+    }
+
+    bool visit(AstStatIf* node) override
+    {
+        if (AstLocal* local = node->conditionLocal)
+        {
+            recordLocal(local, node->condition);
+
+            node->thenbody->visit(this);
+
+            if (node->elsebody)
+                node->elsebody->visit(this);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    bool visit(AstExprIfElse* node) override
+    {
+        if (node->conditionLocal)
+            recordLocal(node->conditionLocal, node->condition);
+
+        analyze(node);
         return false;
     }
 };

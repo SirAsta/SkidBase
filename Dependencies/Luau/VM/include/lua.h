@@ -25,29 +25,50 @@ namespace Hyperion {
     }
 }
 
-struct rbxextraspace
+// 739 RobloxExtraSpace layout: identity @ 0x30, capabilities @ 0x90.
+// `identity` heads an Identity sub-struct; kept as a bare field so the
+// existing `L->userdata->identity = Level` call sites still compile.
+// These are the fields the executor writes into the engine's own extra space,
+// so a silent drift here does not fail loudly - hence the asserts below.
+struct RobloxExtraSpace
 {
     struct Shared
     {
-        unsigned char gap_00[0x10]; /* offset 0 */
-        void* script_context; /* offset 24 */
+        int threadCount; /* offset (0) (0x0) */
+        char gap_0[0x4];
+        void* scriptContext; /* offset (8) (0x8) */
+        char gap_1[0x10];
+        void* scriptVmState; /* offset (32) (0x20) */
+        void** needToFree; /* offset (40) (0x28) */
     };
+    static_assert(sizeof(Shared) == 48, "sizeof(Shared) == 48");
 
-
-
-
-    unsigned char gap_00[0x18]; /* offset 0 */
-    std::shared_ptr<Shared> shared; /* offset 24 */
-    unsigned char gap_01[0x20]; /* offset 40 */
-    uint64_t identity; /* offset 104 */
-    std::weak_ptr<uintptr_t> script; /* offset 96 */
-    std::weak_ptr<uintptr_t> source; /* offset 96 */
-    uint64_t capabilities; /* offset 112 */
-    std::weak_ptr<uintptr_t> actor;
-    unsigned char gap_02[0x10]; /* offset 136 */
-    uint64_t continuations; /* offset 152 */
+    RobloxExtraSpace* next; /* offset (0) (0x0) */
+    void* _container; /* offset (8) (0x8) */
+    RobloxExtraSpace* prev; /* offset (16) (0x10) */
+    std::shared_ptr<Shared> shared; /* offset (24) (0x18) */
+    char gap_0[0x8];
+    uint64_t identity; /* offset (48) (0x30) */
+    char gap_id[0x8];
+    void* scriptContext; /* offset (64) (0x40) */
+    char gap_1[0x8];
+    std::weak_ptr<uintptr_t> source; /* offset (80) (0x50) */
+    char gap_2[0x18];
+    std::weak_ptr<uintptr_t> InstanceDefiningCapabilities; /* offset (120) (0x78) */
+    void* flyweightPtr; /* offset (136) (0x88) */
+    uint64_t capabilities; /* offset (144) (0x90) */
+    std::weak_ptr<uintptr_t> actor; /* offset (152) (0x98) */
+    char gap_3[0x10];
 };
+static_assert(sizeof(RobloxExtraSpace) == 184, "sizeof(RobloxExtraSpace) == 184");
+static_assert(offsetof(RobloxExtraSpace, identity) == 0x30, "RobloxExtraSpace::identity must match the client");
+static_assert(offsetof(RobloxExtraSpace, capabilities) == 0x90, "RobloxExtraSpace::capabilities must match the client");
 
+// lstate.h declares lua_State::userdata as RobloxExtraSpace* while other
+// files still spell it rbxextraspace. Same type, so alias it.
+using rbxextraspace = RobloxExtraSpace;
+
+// option for multiple returns in `lua_pcall' and `lua_call'
 #define LUA_MULTRET (-1)
 
 /*
@@ -58,9 +79,6 @@ struct rbxextraspace
 #define LUA_GLOBALSINDEX (-LUAI_MAXCSTACK - 2002)
 #define lua_upvalueindex(i) (LUA_GLOBALSINDEX - (i))
 #define lua_ispseudo(i) ((i) <= LUA_REGISTRYINDEX)
-
-
-
 
 // thread status; 0 is OK
 enum lua_Status
@@ -93,6 +111,8 @@ typedef int (*lua_Continuation)(lua_State* L, int status);
 */
 
 typedef void* (*lua_Alloc)(void* ud, void* ptr, size_t osize, size_t nsize);
+// `type` identifies the caged heap allocation, which is an opaque embedder-defined identifier
+typedef void* (*lua_CageAlloc)(void* ud, void* ptr, size_t osize, size_t nsize, int type);
 
 // non-return type
 #define l_noret void LUA_NORETURN
@@ -146,8 +166,11 @@ enum lua_Type
     LUA_TPROTO,
     LUA_TUPVAL,
 
+    // the count of all Luau types (including those that are never TValue type tags)
+    LUA_T_ALL,
+
     // the count of TValue type tags
-    LUA_T_COUNT = LUA_TDEADKEY
+    LUA_T_COUNT = LUA_TDEADKEY,
 };
 // clang-format on
 
@@ -163,7 +186,7 @@ typedef unsigned lua_Unsigned;
 /*
 ** state manipulation
 */
-LUA_API lua_State* lua_newstate(lua_Alloc f, void* ud);
+LUA_API lua_State* lua_newstate(lua_Alloc allocator, void* ud);
 LUA_API void lua_close(lua_State* L);
 LUA_API lua_State* lua_newthread(lua_State* L);
 LUA_API lua_State* lua_mainthread(lua_State* L);
@@ -246,10 +269,12 @@ LUA_API void lua_pushcclosurek(lua_State* L, lua_CFunction fn, const char* debug
 LUA_API void lua_pushboolean(lua_State* L, int b);
 LUA_API int lua_pushthread(lua_State* L);
 
+typedef void (*lua_Destructor)(lua_State* L, void* userdata);
+
 LUA_API void lua_pushlightuserdatatagged(lua_State* L, void* p, int tag);
 LUA_API void* lua_newuserdatatagged(lua_State* L, size_t sz, int tag);
 LUA_API void* lua_newuserdatataggedwithmetatable(lua_State* L, size_t sz, int tag); // metatable fetched with lua_getuserdatametatable
-LUA_API void* lua_newuserdatadtor(lua_State* L, size_t sz, void (*dtor)(void*));
+LUA_API void* lua_newuserdatadtor(lua_State* L, size_t sz, lua_Destructor dtor);
 
 LUA_API void* lua_newbuffer(lua_State* L, size_t sz);
 
@@ -307,6 +332,11 @@ LUA_API int lua_isyieldable(lua_State* L);
 LUA_API void* lua_getthreaddata(lua_State* L);
 LUA_API void lua_setthreaddata(lua_State* L, rbxextraspace* data);
 LUA_API int lua_costatus(lua_State* L, lua_State* co);
+
+// NOTE: experimental API, requires a Debug flag and is subject to breaking changes
+LUA_API int lua_hasfinalizers(lua_State* L);
+LUA_API void lua_pushfinalizerfunction(lua_State* L);
+LUA_API void lua_addfinalizer(lua_State* L, lua_State* co, int idx);
 
 /*
 ** garbage-collection function and options
@@ -400,8 +430,6 @@ LUA_API double lua_clock();
 
 LUA_API void lua_setuserdatatag(lua_State* L, int idx, int tag);
 
-typedef void (*lua_Destructor)(lua_State* L, void* userdata);
-
 LUA_API void lua_setuserdatadtor(lua_State* L, int tag, lua_Destructor dtor);
 LUA_API lua_Destructor lua_getuserdatadtor(lua_State* L, int tag);
 
@@ -452,7 +480,7 @@ LUA_API int lua_weakref(lua_State* L, int idx);
 LUA_API int lua_weakunref(lua_State* L, int ref);
 LUA_API int lua_getweakref(lua_State* L, int ref); // returns the type of the value pushed onto the stack
 
-// alternative access for metatables already registered with luaL_newmetatable (remove this restriction with FFlagLuauUdataMetatablePinned)
+// alternative access for userdata metatables
 // used by lua_newuserdatataggedwithmetatable to create tagged userdata with the associated metatable assigned
 LUA_API void lua_setuserdatametatable(lua_State* L, int tag);
 LUA_API void lua_getuserdatametatable(lua_State* L, int tag);
@@ -603,21 +631,21 @@ LUA_API const char* lua_debugtrace(lua_State* L);
 
 struct lua_Debug
 {
-    const char* name; /* offset 0 */
-    const char* what; /* offset 8 */
-    const char* source; /* offset 16 */
-    const char* short_src; /* offset 24 */
-    int linedefined; /* offset 32 */
-    int currentline; /* offset 36 */
-    unsigned char nupvals; /* offset 40 */
-    unsigned char nparams; /* offset 41 */
-    unsigned char isvararg; /* offset 42 */
-    int protoid; /* offset 44 */
-    int bytecodeid; /* offset 48 */
-    void* userdata; /* offset 56 */
-    char ssbuf[256]; /* offset 64 */
-};
+    const char* name;      // (n)
+    const char* what;      // (s) `Lua', `C', `main', `tail'
+    const char* source;    // (s)
+    const char* short_src; // (s)
+    int linedefined;       // (s)
+    int currentline;       // (l)
+    int protoid;           // (p) globally unique (within VM) proto id; 0 for C functions
+    int bytecodeid;        // (p) proto index within its bytecode module; -1 for C functions
+    unsigned char nupvals; // (u) number of upvalues
+    unsigned char nparams; // (a) number of parameters
+    char isvararg;         // (a)
+    void* userdata; // only valid in lua_callhook
 
+    char ssbuf[LUA_IDSIZE];
+};
 
 typedef void (*lua_Coverage)(void* context, const char* function, int linedefined, int depth, const int* hits, size_t size);
 
@@ -633,32 +661,34 @@ LUA_API void lua_getcounters(lua_State* L, int funcindex, void* context, lua_Cou
 
 // }======================================================================
 
-/* Callbacks that can be used to reconfigure behavior of the VM dynamically.
- * These are shared between all coroutines.
- *
- * Note: interrupt is safe to set from an arbitrary thread but all other callbacks
- * can only be changed when the VM is not running any code */
-struct lua_Callbacks
-{
-    void* userdata; /* offset 0 */
-    void (*interrupt)(lua_State* L, int gc); /* offset 8 */
-    void (*debugstep)(lua_State* L, lua_Debug* ar); //GUESS
-    void (*debugprotectederror)(lua_State* L); //GUESS
-    void (*onallocate)(lua_State* L, size_t osize, size_t nsize);
-    int16_t(*useratom)(lua_State* L, const char* s, size_t l); /* offset 40 */
-    void (*panic)(lua_State* L, int errcode); //GUESS
-    void (*debuginterrupt)(lua_State* L, lua_Debug* ar); //GUESS
-    void (*userthread)(lua_State* LP, lua_State* L); /* offset 64 */
-    void (*onfree)(lua_State* L, void* block); /* offset 72 */
-    void (*preresume)(lua_State* L); //GUESS
-    void (*postresume)(lua_State* L); //GUESS
-    void (*debugbreak)(lua_State* L, lua_Debug* ar); /* offset 96 */
+struct lua_Callbacks {
+    void* userdata; /* offset (0) (0x0) */
+    void (*debugstep)(lua_State* L, lua_Debug* ar); /* offset (8) (0x8) */
+    void (*debugbreak)(lua_State* L, lua_Debug* ar); /* offset (16) (0x10) */
+    void (*interrupt)(lua_State* L, int gc);  // GUESS
+    int16_t(*useratom)(lua_State* L, const char* s, size_t l); /* offset (32) (0x20) */
+    void (*preresume)(lua_State* L);  // GUESS
+    void (*postresume)(lua_State* L); // GUESS
+    void (*debugprotectederror)(lua_State* L); // GUESS
+    void (*onfree)(lua_State* L, void* block); /* offset (64) (0x40) */
+    void (*panic)(lua_State* L, int errcode); // GUESS
+    void (*userthread)(lua_State* LP, lua_State* L); /* offset (80) (0x50) */
+    void (*onallocate)(lua_State* L, void* block, size_t osize, size_t nsize, uint8_t memcat, int tt, int tag); /* offset (88) (0x58) */
+    void (*userfinalizer)(lua_State* L, lua_State* co); // GUESS
+    void (*debuginterrupt)(lua_State* L, lua_Debug* ar); // GUESS
 };
 typedef struct lua_Callbacks lua_Callbacks;
+static_assert(sizeof(lua_Callbacks) == 112, "sizeof(lua_Callbacks) == 112");
 
 LUA_API lua_Callbacks* lua_callbacks(lua_State* L);
 #define lua_pushrawclosure(L, rawClosure) \
 setclvalue(L, L->top, rawClosure); \
+
+// Must be called after lua_newstate and before the state creates any buffers
+// The VM makes no assumptions about the layout or structure of the caged heap
+// The VM does assume that the embedder will free any memory allocated if the lua_State the cage is associated with is closed
+LUA_API void lua_setbuffercage(lua_State* L, lua_CageAlloc alloc, void* ud);
+
 /******************************************************************************
  * Copyright (c) 2019-2023 Roblox Corporation
  * Copyright (C) 1994-2008 Lua.org, PUC-Rio.  All rights reserved.

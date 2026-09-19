@@ -3,9 +3,15 @@
 #include "lstate.h"
 #include "lobject.h"
 #include "lapi.h"
+#include <cstring>
 
 namespace Execution
 {
+    template<typename T>
+    static T read(uintptr_t address, uintptr_t offset = 0) {
+        return *reinterpret_cast<T*>(address + offset);
+    }
+
     lua_State* rboloxstate = nullptr;
     lua_State* skidsstate = nullptr;
     std::queue<std::string> queue;
@@ -46,13 +52,27 @@ namespace Execution
         return Luau::compile(source, options, {}, &bytecide);
     }
 
-    void setprotocapabilities(Proto* proto, uintptr_t* capabilities)
+    void setprotocapabilities(Proto* root, uintptr_t* capabilities)
     {
-        if (!proto) return;
-        proto->userdata = capabilities;
-        for (int i = 0; i < proto->sizep; ++i)
-            if (proto->p[i])
-                setprotocapabilities(proto->p[i], capabilities);
+        if (!root)
+            return;
+
+        std::vector<Proto*> pending{ root };
+        while (!pending.empty())
+        {
+            Proto* current = pending.back();
+            pending.pop_back();
+            if (!current)
+                continue;
+
+            current->userdata = capabilities;
+            if (current->sizep < 0 || current->sizep > 100000 || (!current->p && current->sizep != 0))
+                continue;
+
+            for (int i = 0; i < current->sizep; ++i)
+                if (current->p[i])
+                    pending.push_back(current->p[i]);
+        }
     }
 
     void setthreadcapabilities(lua_State* L, int level, uintptr_t capabilities, bool AddExecutorMark)
@@ -134,7 +154,67 @@ namespace Execution
         Execution::queue.push(script);
     }
 
-    uintptr_t GetJobByTypeName(const std::string& TypeName) { // todo in update
+    static bool CheckMemory(uintptr_t address) {
+        if (address < 0x10000 || address > 0x7FFFFFFFFFFF)
+            return false;
+
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi)) == 0)
+            return false;
+
+        if (mbi.Protect & PAGE_NOACCESS || mbi.State != MEM_COMMIT)
+            return false;
+
+        return true;
+    }
+
+    uintptr_t GetJobByTypeName(const std::string& TypeName) {
+        uintptr_t taskScheduler = read<uintptr_t>(Main::Scheduler::TaskScheduler);
+        if (!taskScheduler)
+            return 0;
+
+        uintptr_t jobsStart = read<uintptr_t>(taskScheduler + Main::Scheduler::JobStart);
+        uintptr_t jobsEnd = read<uintptr_t>(taskScheduler + Main::Scheduler::JobEnd);
+        if (!jobsStart || !jobsEnd || jobsStart >= jobsEnd)
+            return 0;
+
+        const size_t nameLen = TypeName.size();
+        if (nameLen == 0 || nameLen >= 0x100)
+            return 0;
+
+        // Job type name pointer lives at 0xF8 per the dump; 0x18/0x118 kept as fallback
+        static constexpr uintptr_t kNameOffsets[] = { 0x18, 0xF8, 0x118 };
+
+        for (uintptr_t current = jobsStart; current < jobsEnd; current += 0x10)
+        {
+            uintptr_t job = read<uintptr_t>(current);
+            if (!job)
+                continue;
+
+            for (uintptr_t off : kNameOffsets)
+            {
+                if (!CheckMemory(job + off))
+                    continue;
+
+                const char* candidate = *reinterpret_cast<const char**>(job + off);
+                if (!candidate)
+                    continue;
+
+                uintptr_t candAddr = reinterpret_cast<uintptr_t>(candidate);
+                if (candAddr < 0x10000 || candAddr > 0x7FFFFFFFFFFF)
+                    continue;
+
+                if (!CheckMemory(candAddr))
+                    continue;
+
+                if (memcmp(candidate, TypeName.c_str(), nameLen) == 0)
+                    return job;
+
+                if (strstr(candidate, TypeName.c_str()) != nullptr)
+                    return job;
+            }
+        }
+
         return 0;
     }
 }

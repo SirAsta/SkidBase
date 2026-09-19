@@ -63,6 +63,7 @@
     <ClCompile Include="Dependencies\Luau\Ast\src\Parser.cpp" />
     <ClCompile Include="Dependencies\Luau\Ast\src\PrettyPrinter.cpp" />
     <ClCompile Include="Dependencies\Luau\Bytecode\src\BytecodeBuilder.cpp" />
+    <ClCompile Include="Dependencies\Luau\Bytecode\src\BytecodeDump.cpp" />
     <ClCompile Include="Dependencies\Luau\Bytecode\src\BytecodeGraph.cpp" />
     <ClCompile Include="Dependencies\Luau\Bytecode\src\Sccp.cpp" />
     <ClCompile Include="Dependencies\Luau\Common\src\BytecodeWire.cpp" />

@@ -5,6 +5,8 @@
 #include "lua.h"
 #include "lcommon.h"
 
+#include <cstddef> // offsetof, for the client layout guards below
+
 /*
 ** Union of all collectible objects
 */
@@ -15,9 +17,9 @@ typedef union GCObject GCObject;
 */
 // clang-format off
 #define CommonHeader \
-    uint8_t tt; /* offset 0 */ \
-    uint8_t marked; /* offset 1 */ \
-    uint8_t memcat; /* offset 2 */
+    uint8_t tt; \
+    uint8_t memcat; \
+    uint8_t marked;
 // clang-format on
 
 /*
@@ -287,64 +289,29 @@ typedef TValue* StkId; // index to stack elements
 /*
 ** String headers for string table
 */
-struct TString
-{
-    CommonHeader; /* offset 0 */
-    unsigned char gap_00[0x1]; /* offset 3 */
-    uint16_t atomflag; /* offset 4 */
-    int16_t atom; /* offset 6 */
-    TString* next; /* offset 8 */
-    TSTRING_HASH_ENC<unsigned int> hash; /* offset 16 */
-    unsigned int len; /* offset 20 */
-    char data[1]; /* offset 24 */
+struct TString {
+    CommonHeader; /* offset (0) (0x0) */
+    uint16_t atomflag; /* offset (4) (0x4) */
+    int16_t atom; /* offset (6) (0x6) */
+    TString* next; /* offset (8) (0x8) */
+    TSTRING_HASH_ENC<unsigned int> hash; /* offset (16) (0x10) */
+    unsigned int len; /* offset (20) (0x14) */
+    char data[1]; /* offset (24) (0x18) */
 };
+static_assert(sizeof(TString) == 32, "sizeof(TString) == 32");
 
 
 #define getstr(ts) (ts)->data
 #define svalue(o) getstr(tsvalue(o))
 
-typedef struct TKey
-{
-    ::Value value;
-    int extra[LUA_EXTRA_SIZE];
-    unsigned tt : 4;
-    int next : 28; // for chaining
-} TKey;
-
-typedef struct LuaNode
-{
-    TValue val;
-    TKey key;
-} LuaNode;
-
-struct LuaTable
-{
-    CommonHeader; /* offset 0 */
-    unsigned char tmcache; /* offset 3 */
-    unsigned char lsizenode; /* offset 4 */
-    unsigned char nodemask8; /* offset 5 */
-    unsigned char readonly; /* offset 6 */
-    unsigned char safeenv; /* offset 7 */
-    int sizearray; /* offset 8 */
-    union /* offset 12 */
-    {
-        int lastfree;
-        int aboundary;
-    };
-    LuaNode* node; /* offset 16 */
-    TValue* array; /* offset 24 */
-    GCObject* gclist; /* offset 32 */
-    LuaTable* metatable; /* offset 40 */
+struct Udata {
+    CommonHeader; /* offset (0) (0x0) */
+    unsigned char tag; /* offset (3) (0x3) */
+    int len; /* offset (4) (0x4) */
+    UDATA_META_ENC<struct LuaTable*> metatable; /* offset (8) (0x8) */
+    char data[1]; /* offset (16) (0x10) */
 };
-
-struct Udata
-{
-    CommonHeader; /* offset 0 */
-    unsigned char tag; /* offset 3 */
-    int len; /* offset 4 */
-    UDATA_META_ENC<struct LuaTable*> metatable; /* offset 8 */
-    char data[1]; /* offset 16 */
-};
+static_assert(sizeof(Udata) == 24, "sizeof(Udata) == 24");
 
 typedef struct LuauBuffer
 {
@@ -386,53 +353,50 @@ struct FeedbackVectorSlot
 /*
 ** Function Prototypes
 */
-// LocVar is defined further down, but Proto::locvars needs the name here.
-// Without this the template argument fails to parse and every later use of
-// Closure/Proto reports bogus "is not a member" errors.
-struct LocVar;
-
 // clang-format off
-struct Proto
-{
-    CommonHeader; /* offset 0 */
-    unsigned char maxstacksize; /* offset 3 */
-    unsigned char is_vararg; /* offset 4 */
-    unsigned char numparams; /* offset 5 */
-    unsigned char nups; /* offset 6 */
-    unsigned char flags; /* offset 7 */
-    PROTO_TYPEINFO_ENC<unsigned char*> typeinfo; /* offset 8 */
-    PROTO_SOURCE_ENC<TString*> source; /* offset 16 */
-    PROTO_LOCVARS_ENC<struct LocVar*> locvars; /* offset 24 */
-    PROTO_USERDATA_ENC<void*> userdata; /* offset 32 */
-    TValue* k; /* offset 40 */
-    unsigned int* code; /* offset 48 */
-    void* execdata; /* offset 56 */
-    uintptr_t exectarget; /* offset 64 */
-    PROTO_LINEINFO_ENC<unsigned char*> lineinfo; /* offset 72 */
-    Proto** p; /* offset 80 */
-    GCObject* gclist; /* offset 88 */
-    unsigned int* codeentry; /* offset 96 */
-    PROTO_UPVALUES_ENC<TString**> upvalues; /* offset 104 */
-    PROTO_ABSLINEINFO_ENC<int*> abslineinfo; /* offset 112 */
-    PROTO_DEBUGNAME_ENC<TString*> debugname; /* offset 120 */
-    PROTO_DEBUGINSN_ENC<unsigned char*> debuginsn; /* offset 128 */
-    int sizelineinfo; /* offset 136 */
-    int linedefined; /* offset 140 */
-    int bytecodeid; /* offset 144 */
-    int sizep; /* offset 148 */
-    int sizecode; /* offset 152 */
-    int sizelocvars; /* offset 156 */
-    int sizeupvalues; /* offset 160 */
-    int linegaplog2; /* offset 164 */
-    int sizek; /* offset 168 */
-    int sizetypeinfo; /* offset 172 */
-    struct FeedbackVectorSlot* feedbackvec; /* offset 176 */
-    int feedbackvecsize; /* offset 184 */
-    int funid; /* offset 188 */
-    Proto* optimized; /* offset 192 */
-    Proto* deoptimized; /* offset 200 */
-    uint64_t cost; /* offset 208 */
+struct Proto {
+    CommonHeader; /* offset (0) (0x0) */
+    unsigned char maxstacksize; /* offset (3) (0x3) */
+    unsigned char flags; /* offset (4) (0x4) */
+    unsigned char is_vararg; /* offset (5) (0x5) */
+    unsigned char nups; /* offset (6) (0x6) */
+    unsigned char numparams; /* offset (7) (0x7) */
+    PROTO_LOCVARS_ENC<struct LocVar*> locvars; /* offset (8) (0x8) */
+    PROTO_LINEINFO_ENC<unsigned char*> lineinfo; /* offset (16) (0x10) */
+    unsigned int* codeentry; /* offset (24) (0x18) */
+    PROTO_DEBUGINSN_ENC<unsigned char*> debuginsn; /* offset (32) (0x20) */
+    Proto** p; /* offset (40) (0x28) */
+    GCObject* gclist; /* offset (48) (0x30) */
+    PROTO_DEBUGNAME_ENC<TString*> debugname; /* offset (56) (0x38) */
+    PROTO_ABSLINEINFO_ENC<int*> abslineinfo; /* offset (64) (0x40) */
+    void* execdata; /* offset (72) (0x48) */
+    uintptr_t exectarget; /* offset (80) (0x50) */
+    PROTO_SOURCE_ENC<TString*> source; /* offset (88) (0x58) */
+    TValue* k; /* offset (96) (0x60) */
+    unsigned int* code; /* offset (104) (0x68) */
+    PROTO_TYPEINFO_ENC<unsigned char*> typeinfo; /* offset (112) (0x70) */
+    PROTO_UPVALUES_ENC<TString**> upvalues; /* offset (120) (0x78) */
+    PROTO_USERDATA_ENC<uint64_t*> userdata; /* offset (128) (0x80) */
+    int sizelineinfo; /* offset (136) (0x88) */
+    int bytecodeid; /* offset (140) (0x8C) */
+    int sizetypeinfo; /* offset (144) (0x90) */
+    int linedefined; /* offset (148) (0x94) */
+    int sizeupvalues; /* offset (152) (0x98) */
+    int sizelocvars; /* offset (156) (0x9C) */
+    int sizecode; /* offset (160) (0xA0) */
+    int sizep; /* offset (164) (0xA4) */
+    int sizek; /* offset (168) (0xA8) */
+    int linegaplog2; /* offset (172) (0xAC) */
+    struct FeedbackVectorSlot* feedbackvec; /* offset (176) (0xB0) */
+    int feedbackvecsize; /* offset (184) (0xB8) */
+    int funid; /* offset (188) (0xBC) */
+    Proto* optimized; /* offset (192) (0xC0) */
+    Proto* deoptimized; /* offset (200) (0xC8) */
+    uint64_t cost; /* offset (208) (0xD0) */
 };
+static_assert(sizeof(Proto) == 216, "sizeof(Proto) == 216");
+static_assert(offsetof(Proto, userdata) == 0x80, "Proto::userdata must match the client");
+static_assert(offsetof(Proto, code) == 0x68, "Proto::code must match the client");
 // clang-format on
 
 typedef struct LocVar
@@ -476,32 +440,28 @@ typedef struct UpVal
 ** Closures
 */
 
-struct Closure
-{
-    CommonHeader; /* offset 0 */
-    unsigned char isC; /* offset 3 */
-    unsigned char nupvalues; /* offset 4 */
-    unsigned char stacksize; /* offset 5 */
-    unsigned char preload; /* offset 6 */
-    GCObject* gclist; /* offset 8 */
-    struct LuaTable* env; /* offset 16 */
-    union /* offset 24 */
-    {
-        struct
-        {
-            CLOSURE_DEBUGNAME_DEPRECATED_ENC<const char*> debugname_DEPRECATED; /* offset 0 */
-            TString* debugname; /* offset 8 */
-            lua_CFunction f; /* offset 16 */
-            CLOSURE_CONT_ENC<lua_Continuation> cont; /* offset 24 */
-            TValue upvals[1]; /* offset 32 */
+struct Closure {
+    CommonHeader; /* offset (0) (0x0) */
+    unsigned char preload; /* offset (3) (0x3) */
+    unsigned char nupvalues; /* offset (4) (0x4) */
+    unsigned char stacksize; /* offset (5) (0x5) */
+    unsigned char isC; /* offset (6) (0x6) */
+    GCObject* gclist; /* offset (8) (0x8) */
+    LuaTable* env; /* offset (16) (0x10) */
+    union {
+        struct {
+            lua_CFunction f; /* offset (0) (0x0) */
+            CLOSURE_CONT_ENC<lua_Continuation> cont; /* offset (8) (0x8) */
+            TString* debugname; /* offset (16) (0x10) */
+            TValue upvals[1]; /* offset (24) (0x18) */
         } c;
-        struct
-        {
-            Proto* p; /* offset 0 */
-            TValue uprefs[1]; /* offset 8 */
+        struct {
+            Proto* p; /* offset (0) (0x0) */
+            TValue uprefs[1]; /* offset (8) (0x8) */
         } l;
     };
 };
+static_assert(sizeof(Closure) == 64, "sizeof(Closure) == 64");
 
 #define iscfunction(o) (ttype(o) == LUA_TFUNCTION && clvalue(o)->isC)
 #define isLfunction(o) (ttype(o) == LUA_TFUNCTION && !clvalue(o)->isC)
@@ -509,6 +469,20 @@ struct Closure
 /*
 ** Tables
 */
+
+typedef struct TKey
+{
+    ::Value value;
+    int extra[LUA_EXTRA_SIZE];
+    unsigned tt : 4;
+    int next : 28; // for chaining
+} TKey;
+
+typedef struct LuaNode
+{
+    TValue val;
+    TKey key;
+} LuaNode;
 
 // copy a value into a key
 #define setnodekey(L, node, obj) \
@@ -533,6 +507,24 @@ struct Closure
     }
 
 // clang-format off
+struct LuaTable {
+    CommonHeader; /* offset (0) (0x0) */
+    uint8_t tmcache; /* offset (3) (0x3) */
+    uint8_t nodemask8; /* offset (4) (0x4) */
+    uint8_t safeenv; /* offset (5) (0x5) */
+    uint8_t lsizenode; /* offset (6) (0x6) */
+    uint8_t readonly; /* offset (7) (0x7) */
+    int sizearray; /* offset (8) (0x8) */
+    union {
+        int lastfree;
+        int aboundary;
+    }; /* offset (12) (0xC) */
+    LuaTable* metatable; /* offset (16) (0x10) */
+    GCObject* gclist; /* offset (24) (0x18) */
+    LuaNode* node; /* offset (32) (0x20) */
+    TValue* array; /* offset (40) (0x28) */
+};
+static_assert(sizeof(LuaTable) == 48, "sizeof(LuaTable) == 48");
 // clang-format on
 
 typedef struct LuauClass
@@ -543,6 +535,9 @@ typedef struct LuauClass
 
     TString* name;
 
+    // The superclass of this class. NULL if this class doesn't inherit.
+    LuauClass* super;
+
     // Mapping from offset to static members (only methods for now).
     TValue* staticmembers;
 
@@ -552,10 +547,6 @@ typedef struct LuauClass
 
     // Mapping from offset to member name. Instance member offsets are stored before static member offsets.
     TString** offsettomember;
-
-    // Metatable for this *class object*. At time of writing this only contains
-    // __call, but we may add more metamethods to class objects in the future.
-    LuaTable* metatable;
 
     // Metatable for instances of this class. NULL until the first metamethod
     // is added via luaR_addclassmember.
@@ -575,6 +566,14 @@ typedef struct LuauClass
     // instance or static members, creating class instances).
     uint32_t numberofallmembers;
 
+    // Can this class be extended?
+    bool isopen;
+
+    // True if this class or any of its ancestors defines an __init method.
+    // If a class's ancestors define an __init method, it must itself also define an __init method.
+    // We cannot determine this statically, so we track it here to error at runtime if the invariant is violated.
+    // The default constructor errors if this is true, which works because the default constructor is overridden if a class defines an __init method.
+    bool hasuserinitinchain;
 } LuauClass;
 
 typedef struct LuauObject
@@ -603,8 +602,10 @@ typedef struct LuauObject
 
 #define twoto(x) ((int)(1 << (x)))
 #define sizenode(t) (twoto((t)->lsizenode))
+#define hasmetacache(t) (((t)->readonly & 2) != 0)
+#define getmetacache(t, event) ((t)->array - (1 + (event)))
 
-#define luaO_nilobject reinterpret_cast<TValue*>(Offsets::Luau::LuaO_NilObject)
+#define luaO_nilobject (&luaO_nilobject_)
 
 LUAI_DATA const TValue luaO_nilobject_;
 

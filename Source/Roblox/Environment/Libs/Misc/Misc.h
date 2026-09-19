@@ -68,7 +68,7 @@ namespace misc
             lua_pushinteger(L, 0);
             return 1;
         }
-        lua_pushinteger(L, L->userdata->identity);
+        lua_pushinteger(L, (int)L->userdata->identity);
         return 1;
     }
 

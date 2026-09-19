@@ -4,6 +4,7 @@
 #include <string>
 #include <queue>
 #include <mutex>
+#include <vector>
 #include <cstdint>
 #include "../../Roblox/Offsets/Offsets.h"
 #include "../../Roblox/Offsets/Funcs.h"
